@@ -1,0 +1,201 @@
+package main
+
+import (
+ "database/sql"
+ "encoding/json"
+ "fmt"
+ "log"
+ "net/http"
+ "os"
+
+ "github.com/gin-gonic/gin"
+ "github.com/Manvelka"
+ _ "github.com/lib/pq"
+)
+
+// Person представляет сущность человека с ФИО.
+type Person struct {
+ ID         int    json:"id"
+ Name       string json:"name"
+ Surname    string json:"surname"
+ Patronymic string json:"patronymic,omitempty"
+}
+
+// EnrichedPerson представляет сущность человека с обогащенными данными.
+type EnrichedPerson struct {
+ ID            int      json:"id"
+ Name          string   json:"name"
+ Surname       string   json:"surname"
+ Patronymic    string   json:"patronymic,omitempty"
+ Age           int      json:"age,omitempty"
+ Gender        string   json:"gender,omitempty"
+ Nationalities []string json:"nationalities,omitempty"
+}
+
+var db *sql.DB
+
+// createPersonTable создает таблицу "people", если она еще не существует.
+func createPersonTable() {
+ createTableSQL := `
+  CREATE TABLE IF NOT EXISTS people (
+   id SERIAL PRIMARY KEY,
+   name TEXT NOT NULL,
+   surname TEXT NOT NULL,
+   patronymic TEXT,
+   age INTEGER,
+   gender TEXT,
+   nationalities TEXT[]
+  )
+ `
+
+ _, err := db.Exec(createTableSQL)
+ if err != nil {
+  log.Fatal("Не удалось создать таблицу people:", err)
+ }
+}
+
+// enrichPerson выполняет обогащение данных о человеке.
+func enrichPerson(person [id346378|*Person]) *EnrichedPerson {
+ enrichedPerson := &EnrichedPerson{
+  ID:         person.ID,
+  Name:       person.Name,
+  Surname:    person.Surname,
+  Patronymic: person.Patronymic,
+ }
+
+ // Получение возраста
+ age, err := getAge(person.Name)
+ if err == nil {
+  enrichedPerson.Age = age
+ }
+
+ // Получение пола
+ gender, err := getGender(person.Name)
+ if err == nil {
+  enrichedPerson.Gender = gender
+ }
+
+ // Получение национальности
+ nationalities, err := getNationalities(person.Name)
+ if err == nil {
+  enrichedPerson.Nationalities = nationalities
+ }
+
+ return enrichedPerson
+}
+
+// getAge получает возраст по имени с помощью API "https://api.agify.io/".
+func getAge(name string) (int, error) {
+ response, err := http.Get(fmt.Sprintf("https://api.agify.io/?name=%s", name))
+ if err != nil {
+  return 0, fmt.Errorf("не удалось выполнить запрос к API Agify.io: %v", err)
+ }
+ defer response.Body.Close()
+
+ var data struct {
+  Age int json:"age"
+ }
+
+ err = json.NewDecoder(response.Body).Decode(&data)
+ if err != nil {
+  return 0, fmt.Errorf("не удалось обработать ответ API Agify.io: %v", err)
+ }
+
+ return data.Age, nil
+}
+
+// getGender получает пол по имени с помощью API "https://api.genderize.io/".
+func getGender(name string) (string, error) {
+ response, err := http.Get(fmt.Sprintf("https://api.genderize.io/?name=%s", name))
+ if err != nil {
+  return "", fmt.Errorf("не удалось выполнить запрос к API Genderize.io: %v", err)
+ }
+ defer response.Body.Close()
+
+ var data struct {
+  Gender string json:"gender"
+ }
+
+ err = json.NewDecoder(response.Body).Decode(&data)
+ if err != nil {
+  return "", fmt.Errorf("не удалось обработать ответ API Genderize.io: %v", err)
+ }
+
+ return data.Gender, nil
+}
+
+// getNationalities получает национальности по имени с помощью API "https://api.nationalize.io/".
+func getNationalities(name string) ([]string, error) {
+ response, err := http.Get(fmt.Sprintf("https://api.nationalize.io/?name=%s", name))
+ if err != nil {
+  return nil, fmt.Errorf("не удалось выполнить запрос к API Nationalize.io: %v", err)
+ }
+ defer response.Body.Close()
+
+ var data struct {
+  Country []struct {
+   CountryID string  json:"country_id"
+   Probability float64 json:"probability"
+  } json:"country"
+ }
+
+ err = json.NewDecoder(response.Body).Decode(&data)
+ if err != nil {
+  return nil, fmt.Errorf("не удалось обработать ответ API Nationalize.io: %v", err)
+ }
+
+ nationalities := make([]string, len(data.Country))
+ for i, country := range data.Country {
+  // Преобразование country_id в полное название страны
+  nationalities[i] = getCountryName(country.CountryID)
+ }
+
+ return nationalities, nil
+}
+// getCountryName возвращает полное название страны по ее идентификатору.
+func getCountryName(countryID string) string {
+ switch countryID {
+ case "AF":
+  return "Afghanistan"
+ case "AL":
+  return "Albania"
+ // Другие страны...
+
+ default:
+  return "Unknown"
+ }
+}
+
+func main() {
+ err := godotenv.Load()
+ if err != nil {
+  log.Fatal("Не удалось загрузить файл .env:", err)
+ }
+
+ dbURL := os.Getenv("DATABASE_URL")
+ db, err = sql.Open("postgres", dbURL)
+ if err != nil {
+  log.Fatal("Не удалось подключиться к базе данных:", err)
+ }
+
+ createPersonTable()
+
+ r := gin.Default()
+ r.GET("/enrich/:id", func(c *gin.Context) {
+  personID := c.Param("id")
+  var person Person
+  err := db.QueryRow("SELECT id, name, surname, patronymic FROM people WHERE id =$1", personID).Scan(&person.ID, &person.Name, &person.Surname, &person.Patronymic)
+  if err != nil {
+   log.Println("Ошибка при выполнении запроса к базе данных:", err)
+   c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить данные о человеке"})
+   return
+  }
+  enrichedPerson := enrichPerson(&person)
+  c.JSON(http.StatusOK, enrichedPerson)
+ })
+
+ err = r.Run()
+ if err != nil {
+  log.Fatal("Ошибка при запуске сервера:", err)
+ }
+}
